@@ -1,6 +1,5 @@
 package com.example.studentservice.config;
 
-
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,15 +16,10 @@ public class S3Config {
 
     @Value("${cloud.aws.region.static}")
     private String region;
-
-    @Value("${cloud.aws.credentials.access-key}")
-    private String accessKey;
-    @Value("${cloud.aws.credentials.secret-key}")
-    private String secretKey;
-
-    @Bean
-//    @Profile("local")
-    public S3Client s3Client(){
+    @Bean("s3Client")
+    @Profile("local")
+    public S3Client s3Client(@Value("${cloud.aws.credentials.access-key}") String accessKey,
+                             @Value("${cloud.aws.credentials.secret-key}") String secretKey){
         AwsBasicCredentials awsBasicCredentials = AwsBasicCredentials.create(accessKey,secretKey );
         return S3Client.builder()
                 .region(Region.of(region))
@@ -34,12 +28,12 @@ public class S3Config {
 
     }
 
-//    @Bean("s3Client")
-//    @Profile("dev")
-//    public S3Client s3ClientDev(){
-//        return S3Client.builder()
-//                .region(Region.of(region))
-//                .credentialsProvider(DefaultCredentialsProvider.create())
-//                .build();
-//    }
+    @Bean("s3Client")
+    @Profile("dev")
+    public S3Client s3ClientDev(){
+        return S3Client.builder()
+                .region(Region.of(region))
+                .credentialsProvider(DefaultCredentialsProvider.create())
+                .build();
+    }
 }
