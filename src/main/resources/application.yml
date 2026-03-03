@@ -2,6 +2,21 @@ spring:
   application:
     name: student-service
 
+  datasource:
+    url: jdbc:postgresql://database-1.cit86seqme0a.us-east-1.rds.amazonaws.com:5432/studentdb
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
 server:
   port: 8089
 
@@ -17,12 +32,12 @@ aws:
   bucket:
     name: reena-demo-bucket
 
-eureka:
-  client:
-    service-url:
-      defaultZone: http://localhost:8761/eureka/
-    register-with-eureka: true
-    fetch-registry: true
+#eureka:
+#  client:
+#    service-url:
+#      defaultZone: http://localhost:8761/eureka/
+#    register-with-eureka: true
+#    fetch-registry: true
 
 
 management:
@@ -38,28 +53,28 @@ management:
     health:
       show-details: always
 
-resilience4j:
-  circuitbreaker:
-    instances:
-      schoolServiceBreaker:
-        registerHealthIndicator: true
-        eventConsumerBufferSize: 10
-        failureRateThreshold: 50
-        minimumNumberOfCalls: 5
-        automaticTransitionFromOpenToHalfOpenEnabled: true
-        waitDurationInOpenState: 6s
-        permittedNumberOfCallsInHalfOpenState: 3
-        slidingWindowSize: 10
-        slidingWindowType: COUNT_BASED
-  retry:
-    instances:
-      schoolServiceBreaker:
-        max-attempts: 3
-        wait-duration: 5s
-  ratelimiter: # Move this to the same level as circuitbreaker and retry
-    instances:
-      studentRateLimiter:
-        limit-for-period: 2
-        limit-refresh-period: 10s
-        timeout-duration: 1s
+#resilience4j:
+#  circuitbreaker:
+#    instances:
+#      schoolServiceBreaker:
+#        registerHealthIndicator: true
+#        eventConsumerBufferSize: 10
+#        failureRateThreshold: 50
+#        minimumNumberOfCalls: 5
+#        automaticTransitionFromOpenToHalfOpenEnabled: true
+#        waitDurationInOpenState: 6s
+#        permittedNumberOfCallsInHalfOpenState: 3
+#        slidingWindowSize: 10
+#        slidingWindowType: COUNT_BASED
+#  retry:
+#    instances:
+#      schoolServiceBreaker:
+#        max-attempts: 3
+#        wait-duration: 5s
+#  ratelimiter: # Move this to the same level as circuitbreaker and retry
+#    instances:
+#      studentRateLimiter:
+#        limit-for-period: 2
+#        limit-refresh-period: 10s
+#        timeout-duration: 1s
 
