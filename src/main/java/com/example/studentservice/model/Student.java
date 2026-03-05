@@ -1,26 +1,33 @@
 package com.example.studentservice.model;
 
-import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbAttribute;
+import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbBean;
+import software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbPartitionKey;
+
+import java.util.UUID;
 
 @Data
 @Builder
-@NoArgsConstructor
+//@NoArgsConstructor
 @AllArgsConstructor
-@Entity
-@Table(name = "students")
+@DynamoDbBean
 public class Student {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-
-    @Column(nullable = false)
+    private String id;
     private String name;
-
-    @Column(nullable = false)
     private String grade;
+
+    @DynamoDbPartitionKey
+    @DynamoDbAttribute("studentid")
+    public String getId() {
+        return id;
+    }
+
+    public Student() {
+        this.id = UUID.randomUUID().toString();
+    }
 }
