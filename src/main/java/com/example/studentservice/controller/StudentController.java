@@ -44,7 +44,7 @@ public class StudentController {
 
     // GET API to fetch a student by ID
     @GetMapping("/{id}")
-    public ResponseEntity<Student> getStudentById(@PathVariable Long id) {
+    public ResponseEntity<Student> getStudentById(@PathVariable String id) {
         logger.info("Fetching student with id: {}", id);
         return studentService.getStudentById(id)
                 .map(student -> new ResponseEntity<>(student, HttpStatus.OK))
@@ -53,7 +53,7 @@ public class StudentController {
 
     // PUT API to update a student
     @PutMapping("/{id}")
-    public ResponseEntity<Student> updateStudent(@PathVariable Long id, @RequestBody Student studentDetails) {
+    public ResponseEntity<Student> updateStudent(@PathVariable String id, @RequestBody Student studentDetails) {
         logger.info("Updating student with id: {}", id);
         try {
             Student updatedStudent = studentService.updateStudent(id, studentDetails);
@@ -65,7 +65,7 @@ public class StudentController {
 
     // DELETE API to delete a student
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteStudent(@PathVariable Long id) {
+    public ResponseEntity<Void> deleteStudent(@PathVariable String id) {
         logger.info("Deleting student with id: {}", id);
         studentService.deleteStudent(id);
         return new ResponseEntity<>(HttpStatus.NO_CONTENT);
