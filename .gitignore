@@ -21,7 +21,7 @@ target/
 *.tar.gz
 *.rar
 
-# Application properties with sensitive data (optional)
-# application.yml
-# application.properties
+# Application properties with sensitive data
+application-local.properties
+**/application-local.properties
 

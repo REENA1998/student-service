@@ -1,0 +1,10 @@
+# Template for application-local.properties
+# Copy this file to application-local.properties and replace the placeholders with your actual values
+
+cloud.aws.credentials.access-key=YOUR_ACCESS_KEY_HERE
+cloud.aws.credentials.secret-key=YOUR_SECRET_KEY_HERE
+#if you have s3 bucket in ap-south change region while testing east is for dynamodb
+cloud.aws.region.static=us-east-1
+
+aws.bucket.name=YOUR_BUCKET_NAME_HERE
+
