@@ -14,9 +14,11 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 @Configuration
 public class DynamoDBEnhancedConfig {
 
+    // @Value("${cloud.aws.region.static:us-east-1}") for lamda testing
     @Value("${cloud.aws.region.static}")
     private String region;
 
+    // Default DynamoDBEnhancedClient for Lambda and other environments (uses IAM role credentials)
     @Bean("dynamoDBEnhancedClient")
     @Profile("local")
     public DynamoDbEnhancedClient dynamoDBEnhancedClient(@Value("${cloud.aws.credentials.access-key}") String accessKey,
@@ -35,7 +37,7 @@ public class DynamoDBEnhancedConfig {
 
 
     @Bean("dynamoDBEnhancedClient")
-    @Profile("dev")
+    @Profile("dev") // comment this for lambda testing
     public DynamoDbEnhancedClient dynamoDBEnhancedClientdev()
     {
         DynamoDbClient dynamoDBClient = DynamoDbClient.builder()

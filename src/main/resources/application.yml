@@ -30,7 +30,7 @@ cloud:
 
 aws:
   bucket:
-    name: reena-demo-bucket
+    name: s3-reenas-bucket
 
 #eureka:
 #  client:

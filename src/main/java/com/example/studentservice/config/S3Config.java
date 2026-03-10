@@ -14,22 +14,25 @@ import software.amazon.awssdk.services.s3.S3Client;
 public class S3Config {
 
 
+    // @Value("${cloud.aws.region.static:us-east-1}")
     @Value("${cloud.aws.region.static}")
     private String region;
-    @Bean("s3Client")
+
+    // Local profile S3Client with explicit credentials
+    @Bean("s3ClientLocal")
     @Profile("local")
-    public S3Client s3Client(@Value("${cloud.aws.credentials.access-key}") String accessKey,
-                             @Value("${cloud.aws.credentials.secret-key}") String secretKey){
-        AwsBasicCredentials awsBasicCredentials = AwsBasicCredentials.create(accessKey,secretKey );
+    public S3Client s3ClientLocal(@Value("${cloud.aws.credentials.access-key}") String accessKey,
+                                   @Value("${cloud.aws.credentials.secret-key}") String secretKey){
+        AwsBasicCredentials awsBasicCredentials = AwsBasicCredentials.create(accessKey, secretKey);
         return S3Client.builder()
                 .region(Region.of(region))
                 .credentialsProvider(StaticCredentialsProvider.create(awsBasicCredentials))
                 .build();
 
     }
-
+    // Default S3Client for Lambda and other environments (uses IAM role credentials)
     @Bean("s3Client")
-    @Profile("dev")
+    @Profile("dev") // remove this for lambda testing bcz we cannot give dev
     public S3Client s3ClientDev(){
         return S3Client.builder()
                 .region(Region.of(region))
