@@ -21,7 +21,3 @@ target/
 *.tar.gz
 *.rar
 
-# Application properties with sensitive data
-application-local.properties
-**/application-local.properties
-
