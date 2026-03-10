@@ -104,6 +104,15 @@
 
     <build>
         <plugins>
+            <!-- Spring Boot Maven Plugin for EC2 deployment -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>com.example.studentservice.StudentServiceApplication</mainClass>
+                </configuration>
+            </plugin>
+
             <!-- Maven Shade Plugin for Lambda deployment -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -111,6 +120,8 @@
                 <version>3.5.0</version>
                 <configuration>
                     <createDependencyReducedPom>false</createDependencyReducedPom>
+                    <shadedArtifactAttached>true</shadedArtifactAttached>
+                    <shadedClassifierName>aws-lambda</shadedClassifierName>
                 </configuration>
                 <executions>
                     <execution>
