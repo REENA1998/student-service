@@ -12,16 +12,23 @@ public class StudentService {
 
     private final StudentRepository studentRepository;
     private final SqsService sqsService;
+    private final SnsService snsService;
 
-    public StudentService(StudentRepository studentRepository, SqsService sqsService) {
+    public StudentService(StudentRepository studentRepository, SqsService sqsService, SnsService snsService) {
         this.studentRepository = studentRepository;
         this.sqsService = sqsService;
+        this.snsService = snsService;
     }
 
     public Student addStudent(Student student) {
         Student savedStudent = studentRepository.save(student);
+
         // Send message to SQS after successfully saving student
         sqsService.sendStudentCreatedMessage(savedStudent);
+
+        // Publish notification to SNS for email alert
+        snsService.publishStudentCreatedNotification(savedStudent);
+
         return savedStudent;
     }
 

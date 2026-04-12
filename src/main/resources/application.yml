@@ -33,6 +33,8 @@ aws:
     name: s3-reenas-bucket
   sqs:
     queue-url: https://sqs.us-east-1.amazonaws.com/986552986813/student-queue
+  sns:
+    topic-arn: arn:aws:sns:us-east-1:986552986813:student-sns
 
 #eureka:
 #  client:
