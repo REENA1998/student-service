@@ -37,7 +37,7 @@ public class DynamoDBEnhancedConfig {
 
 
     @Bean("dynamoDBEnhancedClient")
-    @Profile("dev") // comment this for lambda testing
+    @Profile({"dev", "default"}) // comment this for lambda testing
     public DynamoDbEnhancedClient dynamoDBEnhancedClientdev()
     {
         DynamoDbClient dynamoDBClient = DynamoDbClient.builder()

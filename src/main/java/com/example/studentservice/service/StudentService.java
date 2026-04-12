@@ -11,13 +11,18 @@ import java.util.Optional;
 public class StudentService {
 
     private final StudentRepository studentRepository;
+    private final SqsService sqsService;
 
-    public StudentService(StudentRepository studentRepository) {
+    public StudentService(StudentRepository studentRepository, SqsService sqsService) {
         this.studentRepository = studentRepository;
+        this.sqsService = sqsService;
     }
 
     public Student addStudent(Student student) {
-        return studentRepository.save(student);
+        Student savedStudent = studentRepository.save(student);
+        // Send message to SQS after successfully saving student
+        sqsService.sendStudentCreatedMessage(savedStudent);
+        return savedStudent;
     }
 
     public List<Student> getAllStudents() {

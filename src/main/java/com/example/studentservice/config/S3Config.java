@@ -32,7 +32,7 @@ public class S3Config {
     }
     // Default S3Client for Lambda and other environments (uses IAM role credentials)
     @Bean("s3Client")
-    @Profile("dev") // remove this for lambda testing bcz we cannot give dev
+    @Profile({"dev", "default"}) // remove this for lambda testing bcz we cannot give dev
     public S3Client s3ClientDev(){
         return S3Client.builder()
                 .region(Region.of(region))

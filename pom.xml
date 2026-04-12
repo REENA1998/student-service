@@ -63,6 +63,11 @@
             <artifactId>dynamodb</artifactId>
             <version>2.20.143</version>
         </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sqs</artifactId>
+            <version>2.25.14</version>
+        </dependency>
 
         <!-- AWS Serverless Java Container for Lambda -->
         <dependency>
@@ -104,16 +109,7 @@
 
     <build>
         <plugins>
-            <!-- Spring Boot Maven Plugin for EC2 deployment -->
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-                <configuration>
-                    <mainClass>com.example.studentservice.StudentServiceApplication</mainClass>
-                </configuration>
-            </plugin>
-
-            <!-- Maven Shade Plugin for Lambda deployment -->
+            <!-- Maven Shade Plugin for Lambda deployment - MUST come before Spring Boot plugin -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -131,6 +127,15 @@
                         </goals>
                     </execution>
                 </executions>
+            </plugin>
+
+            <!-- Spring Boot Maven Plugin for EC2 deployment -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>com.example.studentservice.StudentServiceApplication</mainClass>
+                </configuration>
             </plugin>
         </plugins>
     </build>
