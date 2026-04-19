@@ -68,6 +68,13 @@
             <artifactId>sqs</artifactId>
             <version>2.25.14</version>
         </dependency>
+
+        <!-- AWS Parameter Store -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-parameter-store</artifactId>
+            <version>3.1.1</version>
+        </dependency>
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>sns</artifactId>

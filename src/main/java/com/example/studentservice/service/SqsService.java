@@ -14,7 +14,7 @@ public class SqsService {
     private final SqsClient sqsClient;
     private final ObjectMapper objectMapper;
 
-    @Value("${aws.sqs.queue-url}")
+    @Value("${aws.sqs.queue-url:}")
     private String queueUrl;
 
     public SqsService(SqsClient sqsClient) {
