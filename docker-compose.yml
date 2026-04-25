@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  student-service:
+    build: .
+    container_name: student-service
+    ports:
+      - "8089:8089"
+    environment:
+      AWS_REGION: us-east-1
+
