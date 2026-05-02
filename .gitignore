@@ -21,3 +21,5 @@ target/
 *.tar.gz
 *.rar
 
+# Environment variables
+.env
