@@ -59,3 +59,26 @@ jobs:
       - name: Image digest
         run: echo "Image pushed with tags ${{ github.sha }} and v${{ github.run_number }}"
 
+      - name: Update ECS Task Definition
+        id: task-def
+        run: |
+          TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition student-demo-dev --region ${{ env.AWS_REGION }})
+          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:v${{ github.run_number }}" '.taskDefinition | .containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn) | del(.revision) | del(.status) | del(.requiresAttributes) | del(.compatibilities) | del(.registeredAt) | del(.registeredBy)')
+          echo "$NEW_TASK_DEFINITION" > task-definition.json
+
+      - name: Register New Task Definition
+        id: register-task
+        run: |
+          NEW_TASK_ARN=$(aws ecs register-task-definition --cli-input-json file://task-definition.json --region ${{ env.AWS_REGION }} | jq -r '.taskDefinition.taskDefinitionArn')
+          echo "task_arn=$NEW_TASK_ARN" >> $GITHUB_OUTPUT
+
+      - name: Update ECS Service
+        run: |
+          aws ecs update-service --cluster Student-service-dev --service student-demo-dev-service-0korqpn1 --task-definition ${{ steps.register-task.outputs.task_arn }} --force-new-deployment --region ${{ env.AWS_REGION }}
+
+      - name: Wait for Service Stability
+        run: |
+          aws ecs wait services-stable --cluster Student-service-dev --services student-demo-dev-service-0korqpn1 --region ${{ env.AWS_REGION }}
+
+      - name: Deployment Success
+        run: echo "Deployment completed successfully with image v${{ github.run_number }}"
