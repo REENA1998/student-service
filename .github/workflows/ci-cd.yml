@@ -1,9 +1,10 @@
-name: CI/CD Pipeline
+name: "Legacy Pipeline — ECS Fargate"
 
 on:
   push:
     branches:
-      - main
+      - master
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1

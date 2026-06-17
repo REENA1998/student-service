@@ -1,0 +1,257 @@
+name: "New Pipeline — EC2 Deploy"
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: student-images
+  ECR_REGISTRY: 986552986813.dkr.ecr.us-east-1.amazonaws.com
+  EC2_TAG_NAME: student-service-ec2
+  EC2_INSTANCE_TYPE: t2.micro
+  APP_PORT: 8089
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn clean install -DskipTests
+
+      - name: Run tests
+        run: mvn test
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and Push Docker image
+        run: |
+          IMAGE_TAG="v${{ github.run_number }}"
+          docker build -t ${{ env.ECR_REPOSITORY }} .
+          docker tag ${{ env.ECR_REPOSITORY }}:latest ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_ENV
+
+      # ─── STEP 1: Check if EC2 already exists ───────────────────────────────
+      - name: Check if EC2 instance exists
+        id: check-ec2
+        run: |
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Name,Values=${{ env.EC2_TAG_NAME }}" \
+              "Name=instance-state-name,Values=running,stopped,pending" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text --region ${{ env.AWS_REGION }})
+
+          if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "instance_exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️ No EC2 instance found. Will create a new one."
+          else
+            echo "instance_exists=true" >> $GITHUB_OUTPUT
+            echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+            echo "✅ Existing EC2 found: $INSTANCE_ID"
+          fi
+
+      # ─── STEP 2: Fetch VPC/Subnet (only if creating new instance) ──────────
+      - name: Get VPC and Subnet Info
+        id: vpc-info
+        if: steps.check-ec2.outputs.instance_exists == 'false'
+        run: |
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=isDefault,Values=true" \
+            --query "Vpcs[0].VpcId" --output text --region ${{ env.AWS_REGION }})
+
+          SUBNET_ID=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=defaultForAz,Values=true" \
+            --query "Subnets[0].SubnetId" --output text --region ${{ env.AWS_REGION }})
+
+          echo "vpc_id=$VPC_ID" >> $GITHUB_OUTPUT
+          echo "subnet_id=$SUBNET_ID" >> $GITHUB_OUTPUT
+          echo "VPC: $VPC_ID | Subnet: $SUBNET_ID"
+
+      # ─── STEP 3: Create Security Group (only if creating new instance) ──────
+      - name: Create Security Group if not exists
+        id: sg
+        if: steps.check-ec2.outputs.instance_exists == 'false'
+        run: |
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters \
+              "Name=group-name,Values=student-service-sg" \
+              "Name=vpc-id,Values=${{ steps.vpc-info.outputs.vpc_id }}" \
+            --query "SecurityGroups[0].GroupId" --output text --region ${{ env.AWS_REGION }})
+
+          if [ "$SG_ID" == "None" ] || [ -z "$SG_ID" ]; then
+            SG_ID=$(aws ec2 create-security-group \
+              --group-name student-service-sg \
+              --description "Student service EC2 SG" \
+              --vpc-id ${{ steps.vpc-info.outputs.vpc_id }} \
+              --region ${{ env.AWS_REGION }} \
+              --query "GroupId" --output text)
+
+            aws ec2 authorize-security-group-ingress \
+              --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0 \
+              --region ${{ env.AWS_REGION }}
+            aws ec2 authorize-security-group-ingress \
+              --group-id $SG_ID --protocol tcp --port 8089 --cidr 0.0.0.0/0 \
+              --region ${{ env.AWS_REGION }}
+            echo "✅ Created SG: $SG_ID"
+          else
+            echo "✅ SG already exists: $SG_ID"
+          fi
+          echo "sg_id=$SG_ID" >> $GITHUB_OUTPUT
+
+      # ─── STEP 4: Create EC2 Instance (only if it doesn't exist) ────────────
+      - name: Create EC2 Instance
+        id: create-ec2
+        if: steps.check-ec2.outputs.instance_exists == 'false'
+        run: |
+          AMI_ID=$(aws ec2 describe-images \
+            --owners amazon \
+            --filters \
+              "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2" \
+              "Name=state,Values=available" \
+            --query "sort_by(Images, &CreationDate)[-1].ImageId" \
+            --output text --region ${{ env.AWS_REGION }})
+
+          echo "Using AMI: $AMI_ID"
+
+          cat > /tmp/user-data.sh << 'SCRIPT'
+          #!/bin/bash
+          yum update -y
+          yum install -y docker
+          service docker start
+          systemctl enable docker
+          usermod -aG docker ec2-user
+          SCRIPT
+
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id $AMI_ID \
+            --instance-type ${{ env.EC2_INSTANCE_TYPE }} \
+            --key-name ${{ secrets.EC2_KEY_NAME }} \
+            --security-group-ids ${{ steps.sg.outputs.sg_id }} \
+            --subnet-id ${{ steps.vpc-info.outputs.subnet_id }} \
+            --associate-public-ip-address \
+            --iam-instance-profile Name=ec2-ecr-dynamodb-role \
+            --user-data file:///tmp/user-data.sh \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${{ env.EC2_TAG_NAME }}}]" \
+            --region ${{ env.AWS_REGION }} \
+            --query "Instances[0].InstanceId" --output text)
+
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "🚀 Created instance: $INSTANCE_ID"
+
+          echo "⏳ Waiting for instance to be running..."
+          aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+          echo "⏳ Waiting 90s for Docker to install via user-data..."
+          sleep 90
+
+      # ─── STEP 5: Resolve final instance ID and IP (existing or new) ─────────
+      - name: Resolve EC2 Info
+        id: ec2-info
+        run: |
+          if [ "${{ steps.check-ec2.outputs.instance_exists }}" == "true" ]; then
+            INSTANCE_ID="${{ steps.check-ec2.outputs.instance_id }}"
+          else
+            INSTANCE_ID="${{ steps.create-ec2.outputs.instance_id }}"
+          fi
+
+          STATE=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query "Reservations[0].Instances[0].State.Name" \
+            --output text --region ${{ env.AWS_REGION }})
+
+          if [ "$STATE" == "stopped" ]; then
+            echo "⚠️ Instance stopped. Starting it..."
+            aws ec2 start-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+            aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+            sleep 30
+          fi
+
+          PUBLIC_IP=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text --region ${{ env.AWS_REGION }})
+
+          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "✅ EC2: $INSTANCE_ID | IP: $PUBLIC_IP"
+
+      # ─── STEP 6: SSH Setup ──────────────────────────────────────────────────
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > /tmp/ec2_key.pem
+          chmod 600 /tmp/ec2_key.pem
+
+      - name: Wait for SSH to be available
+        run: |
+          echo "⏳ Waiting for SSH..."
+          for i in $(seq 1 20); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+              -i /tmp/ec2_key.pem ec2-user@${{ steps.ec2-info.outputs.public_ip }} "echo OK" 2>/dev/null; then
+              echo "✅ SSH is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/20 — retrying in 15s..."
+            sleep 15
+          done
+          echo "❌ SSH not available. Check SG port 22 and key pair."
+          exit 1
+
+      # ─── STEP 7: Pull image and restart container ───────────────────────────
+      - name: Deploy Docker Container on EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no -i /tmp/ec2_key.pem \
+            ec2-user@${{ steps.ec2-info.outputs.public_ip }} << EOF
+            set -e
+
+            echo "🔐 Logging into ECR..."
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+            echo "📦 Pulling image ${{ env.image_tag }}..."
+            docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.image_tag }}
+
+            echo "🛑 Removing old container if running..."
+            docker stop student-service 2>/dev/null || true
+            docker rm   student-service 2>/dev/null || true
+
+            echo "▶️ Starting new container..."
+            docker run -d \
+              --name student-service \
+              --restart unless-stopped \
+              -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
+              -e SPRING_PROFILES_ACTIVE=dev \
+              ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.image_tag }}
+
+            docker ps | grep student-service
+            echo "✅ Container deployed with tag ${{ env.image_tag }}!"
+          EOF
+
+      - name: Deployment Summary
+        run: |
+          echo "🎉 Deployment complete!"
+          echo "📦 Image tag : v${{ github.run_number }}"
+          echo "🌐 App URL   : http://${{ steps.ec2-info.outputs.public_ip }}:${{ env.APP_PORT }}"
+          echo "🔗 Test API  : http://${{ steps.ec2-info.outputs.public_ip }}:${{ env.APP_PORT }}/students/school"
