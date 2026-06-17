@@ -1,4 +1,4 @@
-name: "New Pipeline — EC2 Deploy"
+name: "Deploy to EC2"
 
 on:
   push:
@@ -11,17 +11,18 @@ env:
   ECR_REPOSITORY: student-images
   ECR_REGISTRY: 986552986813.dkr.ecr.us-east-1.amazonaws.com
   EC2_TAG_NAME: student-service-ec2
-  EC2_INSTANCE_TYPE: t2.micro
   APP_PORT: 8089
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
+      # ─── 1. Checkout ────────────────────────────────────────────────────────
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # ─── 2. Build ───────────────────────────────────────────────────────────
       - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
@@ -32,9 +33,7 @@ jobs:
       - name: Build with Maven
         run: mvn clean install -DskipTests
 
-      - name: Run tests
-        run: mvn test
-
+      # ─── 3. AWS Auth ────────────────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -43,22 +42,22 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build and Push Docker image
+      # ─── 4. Build & Push Docker image ───────────────────────────────────────
+      - name: Build and push Docker image
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           IMAGE_TAG="v${{ github.run_number }}-${SHORT_SHA}"
-          docker build -t ${{ env.ECR_REPOSITORY }} .
-          docker tag ${{ env.ECR_REPOSITORY }}:latest ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}
-          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}
-          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_ENV
-          echo "✅ Pushed image with tag: ${IMAGE_TAG}"
+          docker build -t $ECR_REPOSITORY .
+          docker tag $ECR_REPOSITORY:latest $ECR_REGISTRY/$ECR_REPOSITORY:${IMAGE_TAG}
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:${IMAGE_TAG}
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
+          echo "✅ Pushed: ${IMAGE_TAG}"
 
-      # ─── STEP 1: Check if EC2 already exists ───────────────────────────────
-      - name: Check if EC2 instance exists
-        id: check-ec2
+      # ─── 5. Find existing EC2 ───────────────────────────────────────────────
+      - name: Get EC2 instance info
+        id: ec2
         run: |
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters \
@@ -68,212 +67,144 @@ jobs:
             --output text --region ${{ env.AWS_REGION }})
 
           if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "instance_exists=false" >> $GITHUB_OUTPUT
-            echo "⚠️ No EC2 instance found. Will create a new one."
-          else
-            echo "instance_exists=true" >> $GITHUB_OUTPUT
-            echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-            echo "✅ Existing EC2 found: $INSTANCE_ID"
+            echo "❌ No EC2 found with tag Name=${{ env.EC2_TAG_NAME }}"
+            echo "   Make sure your EC2 instance has a tag: Name = student-service-ec2"
+            exit 1
           fi
 
-      # ─── STEP 2: Fetch VPC/Subnet (only if creating new instance) ──────────
-      - name: Get VPC and Subnet Info
-        id: vpc-info
-        if: steps.check-ec2.outputs.instance_exists == 'false'
-        run: |
-          VPC_ID=$(aws ec2 describe-vpcs \
-            --filters "Name=isDefault,Values=true" \
-            --query "Vpcs[0].VpcId" --output text --region ${{ env.AWS_REGION }})
-
-          SUBNET_ID=$(aws ec2 describe-subnets \
-            --filters "Name=vpc-id,Values=$VPC_ID" "Name=defaultForAz,Values=true" \
-            --query "Subnets[0].SubnetId" --output text --region ${{ env.AWS_REGION }})
-
-          echo "vpc_id=$VPC_ID" >> $GITHUB_OUTPUT
-          echo "subnet_id=$SUBNET_ID" >> $GITHUB_OUTPUT
-          echo "VPC: $VPC_ID | Subnet: $SUBNET_ID"
-
-      # ─── STEP 3: Create Security Group (only if creating new instance) ──────
-      - name: Create Security Group if not exists
-        id: sg
-        if: steps.check-ec2.outputs.instance_exists == 'false'
-        run: |
-          SG_ID=$(aws ec2 describe-security-groups \
-            --filters \
-              "Name=group-name,Values=student-service-sg" \
-              "Name=vpc-id,Values=${{ steps.vpc-info.outputs.vpc_id }}" \
-            --query "SecurityGroups[0].GroupId" --output text --region ${{ env.AWS_REGION }})
-
-          if [ "$SG_ID" == "None" ] || [ -z "$SG_ID" ]; then
-            SG_ID=$(aws ec2 create-security-group \
-              --group-name student-service-sg \
-              --description "Student service EC2 SG" \
-              --vpc-id ${{ steps.vpc-info.outputs.vpc_id }} \
-              --region ${{ env.AWS_REGION }} \
-              --query "GroupId" --output text)
-
-            aws ec2 authorize-security-group-ingress \
-              --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0 \
-              --region ${{ env.AWS_REGION }}
-            aws ec2 authorize-security-group-ingress \
-              --group-id $SG_ID --protocol tcp --port 8089 --cidr 0.0.0.0/0 \
-              --region ${{ env.AWS_REGION }}
-            echo "✅ Created SG: $SG_ID"
-          else
-            echo "✅ SG already exists: $SG_ID"
-          fi
-          echo "sg_id=$SG_ID" >> $GITHUB_OUTPUT
-
-      # ─── STEP 4: Create EC2 Instance (only if it doesn't exist) ────────────
-      - name: Create EC2 Instance
-        id: create-ec2
-        if: steps.check-ec2.outputs.instance_exists == 'false'
-        env:
-          EC2_KEY_NAME: ${{ secrets.EC2_KEY_NAME }}
-        run: |
-          AMI_ID=$(aws ec2 describe-images \
-            --owners amazon \
-            --filters \
-              "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2" \
-              "Name=state,Values=available" \
-            --query "sort_by(Images, &CreationDate)[-1].ImageId" \
-            --output text --region ${{ env.AWS_REGION }})
-
-          echo "Using AMI: $AMI_ID"
-
-          cat > /tmp/user-data.sh << 'SCRIPT'
-          #!/bin/bash
-          yum update -y
-          yum install -y docker
-          service docker start
-          systemctl enable docker
-          usermod -aG docker ec2-user
-          SCRIPT
-
-          # Only pass --key-name if the secret is actually set
-          KEY_ARG=""
-          if [ -n "$EC2_KEY_NAME" ]; then
-            KEY_ARG="--key-name $EC2_KEY_NAME"
-            echo "🔑 Using key pair: $EC2_KEY_NAME"
-          else
-            echo "⚠️ No EC2_KEY_NAME secret set — instance created without key pair (use SSM for access)"
-          fi
-
-          INSTANCE_ID=$(aws ec2 run-instances \
-            --image-id $AMI_ID \
-            --instance-type ${{ env.EC2_INSTANCE_TYPE }} \
-            $KEY_ARG \
-            --security-group-ids ${{ steps.sg.outputs.sg_id }} \
-            --subnet-id ${{ steps.vpc-info.outputs.subnet_id }} \
-            --associate-public-ip-address \
-            --iam-instance-profile Name=ec2-s3-role \
-            --user-data file:///tmp/user-data.sh \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${{ env.EC2_TAG_NAME }}}]" \
-            --region ${{ env.AWS_REGION }} \
-            --query "Instances[0].InstanceId" --output text)
-
-          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-          echo "🚀 Created instance: $INSTANCE_ID"
-
-          echo "⏳ Waiting for instance to be running..."
-          aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
-          echo "⏳ Waiting 90s for Docker to install via user-data..."
-          sleep 90
-
-      # ─── STEP 5: Resolve final instance ID and IP (existing or new) ─────────
-      - name: Resolve EC2 Info
-        id: ec2-info
-        run: |
-          if [ "${{ steps.check-ec2.outputs.instance_exists }}" == "true" ]; then
-            INSTANCE_ID="${{ steps.check-ec2.outputs.instance_id }}"
-          else
-            INSTANCE_ID="${{ steps.create-ec2.outputs.instance_id }}"
-          fi
-
+          # Start if stopped
           STATE=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_ID \
             --query "Reservations[0].Instances[0].State.Name" \
-            --output text --region ${{ env.AWS_REGION }})
-
+            --output text)
           if [ "$STATE" == "stopped" ]; then
-            echo "⚠️ Instance stopped. Starting it..."
-            aws ec2 start-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
-            aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
-            sleep 30
+            echo "⚠️ Instance stopped — starting..."
+            aws ec2 start-instances --instance-ids $INSTANCE_ID
+            aws ec2 wait instance-running --instance-ids $INSTANCE_ID
+            sleep 20
           fi
 
           PUBLIC_IP=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_ID \
             --query "Reservations[0].Instances[0].PublicIpAddress" \
-            --output text --region ${{ env.AWS_REGION }})
+            --output text)
+
+          AZ=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query "Reservations[0].Instances[0].Placement.AvailabilityZone" \
+            --output text)
 
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
-          echo "✅ EC2: $INSTANCE_ID | IP: $PUBLIC_IP"
+          echo "public_ip=$PUBLIC_IP"      >> $GITHUB_OUTPUT
+          echo "az=$AZ"                    >> $GITHUB_OUTPUT
+          echo "✅ EC2: $INSTANCE_ID | IP: $PUBLIC_IP | AZ: $AZ"
 
-      # ─── STEP 6: SSH Setup ──────────────────────────────────────────────────
-      - name: Setup SSH Key
-        env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+      # ─── 6. Deploy via EC2 Instance Connect ─────────────────────────────────
+      - name: Deploy to EC2
         run: |
-          if [ -z "$EC2_SSH_PRIVATE_KEY" ]; then
-            echo "❌ EC2_SSH_PRIVATE_KEY secret is not set in GitHub."
-            echo "   Go to: Settings → Secrets and variables → Actions → New repository secret"
-            echo "   Add EC2_SSH_PRIVATE_KEY with the content of your .pem key file"
-            echo "   Add EC2_KEY_NAME with the name of your AWS key pair"
-            exit 1
-          fi
-          echo "$EC2_SSH_PRIVATE_KEY" > /tmp/ec2_key.pem
-          chmod 600 /tmp/ec2_key.pem
+          INSTANCE_ID="${{ steps.ec2.outputs.instance_id }}"
+          PUBLIC_IP="${{ steps.ec2.outputs.public_ip }}"
+          AZ="${{ steps.ec2.outputs.az }}"
 
-      - name: Wait for SSH to be available
-        run: |
-          echo "⏳ Waiting for SSH..."
+          echo "⏳ Waiting for SSH to be available..."
           for i in $(seq 1 20); do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-              -i /tmp/ec2_key.pem ec2-user@${{ steps.ec2-info.outputs.public_ip }} "echo OK" 2>/dev/null; then
-              echo "✅ SSH is ready!"
-              exit 0
+            # Generate temp key and push via EC2 Instance Connect
+            ssh-keygen -t rsa -b 2048 -f /tmp/tmp_key -N "" -q
+            aws ec2-instance-connect send-ssh-public-key \
+              --instance-id $INSTANCE_ID \
+              --instance-os-user ec2-user \
+              --ssh-public-key file:///tmp/tmp_key.pub \
+              --availability-zone $AZ 2>/dev/null || true
+
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
+              -i /tmp/tmp_key ec2-user@$PUBLIC_IP "echo OK" 2>/dev/null; then
+              echo "✅ SSH ready (attempt $i)"
+              break
             fi
-            echo "Attempt $i/20 — retrying in 15s..."
-            sleep 15
+            rm -f /tmp/tmp_key /tmp/tmp_key.pub
+            echo "Attempt $i/20 — retrying in 10s..."
+            sleep 10
+            [ $i -eq 20 ] && echo "❌ SSH unavailable" && exit 1
           done
-          echo "❌ SSH not available. Check SG port 22 and key pair."
-          exit 1
 
-      # ─── STEP 7: Pull image and restart container ───────────────────────────
-      - name: Deploy Docker Container on EC2
+          # Fresh key for deployment session
+          ssh-keygen -t rsa -b 2048 -f /tmp/deploy_key -N "" -q
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id $INSTANCE_ID \
+            --instance-os-user ec2-user \
+            --ssh-public-key file:///tmp/deploy_key.pub \
+            --availability-zone $AZ
+
+          echo "🚀 Deploying image: ${{ env.IMAGE_TAG }}"
+
+          ssh -o StrictHostKeyChecking=no -i /tmp/deploy_key ec2-user@$PUBLIC_IP << ENDSSH
+          set -e
+          echo "🔐 ECR login..."
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+            docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+          echo "📦 Pulling ${{ env.IMAGE_TAG }}..."
+          docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+          echo "🛑 Stopping old container..."
+          docker stop student-service 2>/dev/null || true
+          docker rm   student-service 2>/dev/null || true
+
+          echo "▶️ Starting container..."
+          docker run -d \
+            --name student-service \
+            --restart unless-stopped \
+            -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
+            -e SPRING_PROFILES_ACTIVE=dev \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+          docker ps --filter name=student-service --format "✅ Running: {{.Names}} {{.Status}}"
+          ENDSSH
+
+      # ─── 7. Smoke Test ───────────────────────────────────────────────────────
+      - name: Smoke test APIs
         run: |
-          ssh -o StrictHostKeyChecking=no -i /tmp/ec2_key.pem \
-            ec2-user@${{ steps.ec2-info.outputs.public_ip }} << EOF
-            set -e
+          BASE="http://${{ steps.ec2.outputs.public_ip }}:${{ env.APP_PORT }}"
+          echo "⏳ Waiting 40s for Spring Boot to start..."
+          sleep 40
 
-            echo "🔐 Logging into ECR..."
-            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+          # Wait until app responds
+          for i in $(seq 1 15); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$BASE/students/school" || echo "000")
+            [ "$CODE" != "000" ] && echo "✅ App is up" && break
+            echo "Attempt $i — not ready yet, waiting 10s..."
+            sleep 10
+            [ $i -eq 15 ] && echo "❌ App failed to start" && exit 1
+          done
 
-            echo "📦 Pulling image ${{ env.image_tag }}..."
-            docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.image_tag }}
+          pass=0; fail=0
 
-            echo "🛑 Removing old container if running..."
-            docker stop student-service 2>/dev/null || true
-            docker rm   student-service 2>/dev/null || true
+          run_test() {
+            local name=$1 method=$2 url=$3 body=$4 expected=$5
+            if [ -n "$body" ]; then
+              CODE=$(curl -s -o /tmp/resp -w "%{http_code}" --max-time 10 -X $method "$url" \
+                -H "Content-Type: application/json" -d "$body")
+            else
+              CODE=$(curl -s -o /tmp/resp -w "%{http_code}" --max-time 10 "$url")
+            fi
+            BODY=$(cat /tmp/resp)
+            if [ "$CODE" == "$expected" ] || ([ "$expected" == "200/201" ] && ([ "$CODE" == "200" ] || [ "$CODE" == "201" ])); then
+              echo "✅ $name → $CODE"
+              pass=$((pass+1))
+            else
+              echo "❌ $name → $CODE (expected $expected) | $BODY"
+              fail=$((fail+1))
+            fi
+          }
 
-            echo "▶️ Starting new container..."
-            docker run -d \
-              --name student-service \
-              --restart unless-stopped \
-              -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} \
-              -e SPRING_PROFILES_ACTIVE=dev \
-              ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.image_tag }}
-
-            docker ps | grep student-service
-            echo "✅ Container deployed with tag ${{ env.image_tag }}!"
-          EOF
-
-      - name: Deployment Summary
-        run: |
-          echo "🎉 Deployment complete!"
-          echo "📦 Image tag : v${{ github.run_number }}"
-          echo "🌐 App URL   : http://${{ steps.ec2-info.outputs.public_ip }}:${{ env.APP_PORT }}"
-          echo "🔗 Test API  : http://${{ steps.ec2-info.outputs.public_ip }}:${{ env.APP_PORT }}/students/school"
+          echo ""
+          echo "══════════════════════ SMOKE TESTS ══════════════════════"
+          run_test "GET /students"         GET  "$BASE/students"         "" "200"
+          run_test "GET /students/school"  GET  "$BASE/students/school"  "" "200"
+          run_test "POST /students"        POST "$BASE/students" '{"name":"ci-test","grade":"A"}' "200/201"
+          echo "══════════════════════════════════════════════════════════"
+          echo "Results: ✅ $pass passed  ❌ $fail failed"
+          echo ""
+          echo "🔗 App URL : $BASE"
+          echo "🔗 Students: $BASE/students"
+          [ $fail -gt 0 ] && exit 1 || exit 0
