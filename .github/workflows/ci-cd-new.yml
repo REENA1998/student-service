@@ -166,7 +166,7 @@ jobs:
             --security-group-ids ${{ steps.sg.outputs.sg_id }} \
             --subnet-id ${{ steps.vpc-info.outputs.subnet_id }} \
             --associate-public-ip-address \
-            --iam-instance-profile Name=ec2-ecr-dynamodb-role \
+            --iam-instance-profile Name=ec2-s3-role \
             --user-data file:///tmp/user-data.sh \
             --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${{ env.EC2_TAG_NAME }}}]" \
             --region ${{ env.AWS_REGION }} \
