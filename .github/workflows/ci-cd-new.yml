@@ -111,6 +111,9 @@ jobs:
             "DocumentName": "AWS-RunShellScript",
             "Parameters": {
               "commands": [
+                "yum install -y docker 2>/dev/null || apt-get install -y docker.io 2>/dev/null || true",
+                "systemctl start docker || service docker start || true",
+                "systemctl enable docker || true",
                 "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}",
                 "docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}",
                 "docker stop student-service 2>/dev/null || true",
@@ -186,11 +189,11 @@ jobs:
             local name=$1 method=$2 url=$3 body=$4 expected=$5
             if [ -n "$body" ]; then
               CODE=$(curl -s -o /tmp/resp -w "%{http_code}" --max-time 10 -X $method "$url" \
-                -H "Content-Type: application/json" -d "$body")
+                -H "Content-Type: application/json" -d "$body" || echo "000")
             else
-              CODE=$(curl -s -o /tmp/resp -w "%{http_code}" --max-time 10 "$url")
+              CODE=$(curl -s -o /tmp/resp -w "%{http_code}" --max-time 10 "$url" || echo "000")
             fi
-            BODY=$(cat /tmp/resp)
+            BODY=$(cat /tmp/resp 2>/dev/null || echo "no response")
             if [ "$CODE" == "$expected" ] || ([ "$expected" == "200/201" ] && ([ "$CODE" == "200" ] || [ "$CODE" == "201" ])); then
               echo "✅ $name → $CODE"
               pass=$((pass+1))
