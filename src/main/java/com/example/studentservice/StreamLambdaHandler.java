@@ -7,9 +7,11 @@ import com.amazonaws.serverless.proxy.spring.SpringBootLambdaContainerHandler;
 import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestStreamHandler;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Lambda Handler for Spring Boot Application
@@ -32,7 +34,11 @@ public class StreamLambdaHandler implements RequestStreamHandler {
     @Override
     public void handleRequest(InputStream inputStream, OutputStream outputStream, Context context)
             throws IOException {
-        handler.proxyStream(inputStream, outputStream, context);
+        // Log raw event so we can see exactly what API Gateway is sending
+        byte[] inputBytes = inputStream.readAllBytes();
+        String rawEvent = new String(inputBytes, StandardCharsets.UTF_8);
+        context.getLogger().log("RAW_EVENT_START: " + rawEvent + " :RAW_EVENT_END");
+
+        handler.proxyStream(new ByteArrayInputStream(inputBytes), outputStream, context);
     }
 }
-
