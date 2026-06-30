@@ -55,8 +55,8 @@ jobs:
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
           echo "✅ Pushed: ${IMAGE_TAG}"
 
-      # ─── 5. Find existing EC2 ───────────────────────────────────────────────
-      - name: Get EC2 instance info
+      # ─── 5. Find or create EC2 ────────────────────────────────────────────────
+      - name: Get or create EC2 instance
         id: ec2
         run: |
           INSTANCE_ID=$(aws ec2 describe-instances \
@@ -67,32 +67,105 @@ jobs:
             --output text --region ${{ env.AWS_REGION }})
 
           if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "❌ No EC2 found with tag Name=${{ env.EC2_TAG_NAME }}"
-            echo "   Make sure your EC2 instance has a tag: Name = student-service-ec2"
-            exit 1
+            echo "⚠️ No EC2 found with tag Name=${{ env.EC2_TAG_NAME }}"
+            echo "🔨 Creating new EC2 instance (t2.micro — free tier)..."
+
+            # Get latest Amazon Linux 2023 AMI
+            AMI_ID=$(aws ec2 describe-images \
+              --owners amazon \
+              --filters \
+                "Name=name,Values=al2023-ami-2023.*-x86_64" \
+                "Name=state,Values=available" \
+              --query "Images | sort_by(@, &CreationDate) | [-1].ImageId" \
+              --output text --region ${{ env.AWS_REGION }})
+            echo "   AMI: $AMI_ID"
+
+            # Get default VPC and first subnet
+            VPC_ID=$(aws ec2 describe-vpcs \
+              --filters "Name=isDefault,Values=true" \
+              --query "Vpcs[0].VpcId" \
+              --output text --region ${{ env.AWS_REGION }})
+
+            SUBNET_ID=$(aws ec2 describe-subnets \
+              --filters "Name=vpc-id,Values=$VPC_ID" \
+              --query "Subnets[0].SubnetId" \
+              --output text --region ${{ env.AWS_REGION }})
+
+            # Create or reuse security group
+            SG_ID=$(aws ec2 describe-security-groups \
+              --filters \
+                "Name=group-name,Values=student-service-sg" \
+                "Name=vpc-id,Values=$VPC_ID" \
+              --query "SecurityGroups[0].GroupId" \
+              --output text --region ${{ env.AWS_REGION }})
+
+            if [ "$SG_ID" == "None" ] || [ -z "$SG_ID" ]; then
+              SG_ID=$(aws ec2 create-security-group \
+                --group-name student-service-sg \
+                --description "SG for student-service EC2" \
+                --vpc-id $VPC_ID \
+                --query "GroupId" \
+                --output text --region ${{ env.AWS_REGION }})
+
+              aws ec2 authorize-security-group-ingress \
+                --group-id $SG_ID \
+                --protocol tcp --port ${{ env.APP_PORT }} --cidr 0.0.0.0/0 \
+                --region ${{ env.AWS_REGION }}
+
+              aws ec2 authorize-security-group-ingress \
+                --group-id $SG_ID \
+                --protocol tcp --port 443 --cidr 0.0.0.0/0 \
+                --region ${{ env.AWS_REGION }}
+
+              echo "   Created SG: $SG_ID"
+            else
+              echo "   Reusing SG: $SG_ID"
+            fi
+
+            # Launch t2.micro instance (free tier eligible)
+            INSTANCE_ID=$(aws ec2 run-instances \
+              --image-id $AMI_ID \
+              --instance-type t2.micro \
+              --subnet-id $SUBNET_ID \
+              --security-group-ids $SG_ID \
+              --iam-instance-profile Name=ec2-s3-role \
+              --associate-public-ip-address \
+              --user-data '#!/bin/bash
+          yum update -y
+          yum install -y docker
+          systemctl enable docker && systemctl start docker' \
+              --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${{ env.EC2_TAG_NAME }}}]" \
+              --query "Instances[0].InstanceId" \
+              --output text --region ${{ env.AWS_REGION }})
+
+            echo "   Instance: $INSTANCE_ID"
+            echo "⏳ Waiting for instance to be running..."
+            aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+            aws ec2 wait instance-status-ok --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+            echo "✅ EC2 created: $INSTANCE_ID"
           fi
 
           # Start if stopped
           STATE=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_ID \
             --query "Reservations[0].Instances[0].State.Name" \
-            --output text)
+            --output text --region ${{ env.AWS_REGION }})
           if [ "$STATE" == "stopped" ]; then
             echo "⚠️ Instance stopped — starting..."
-            aws ec2 start-instances --instance-ids $INSTANCE_ID
-            aws ec2 wait instance-running --instance-ids $INSTANCE_ID
+            aws ec2 start-instances --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
+            aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region ${{ env.AWS_REGION }}
             sleep 20
           fi
 
           PUBLIC_IP=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_ID \
             --query "Reservations[0].Instances[0].PublicIpAddress" \
-            --output text)
+            --output text --region ${{ env.AWS_REGION }})
 
           AZ=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_ID \
             --query "Reservations[0].Instances[0].Placement.AvailabilityZone" \
-            --output text)
+            --output text --region ${{ env.AWS_REGION }})
 
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
           echo "public_ip=$PUBLIC_IP"      >> $GITHUB_OUTPUT
