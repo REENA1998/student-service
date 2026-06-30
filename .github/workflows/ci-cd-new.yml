@@ -172,6 +172,122 @@ jobs:
           echo "az=$AZ"                    >> $GITHUB_OUTPUT
           echo "✅ EC2: $INSTANCE_ID | IP: $PUBLIC_IP | AZ: $AZ"
 
+      # ══════════════════════════════════════════════════════════════════════════
+      # ⚠️ DELETE THIS BLOCK AFTER ALB TESTING IS DONE
+      # Creates 2 extra EC2 instances in different AZs for load balancer testing
+      # ══════════════════════════════════════════════════════════════════════════
+      - name: Create 2 extra EC2 for ALB testing (DELETE LATER)
+        id: alb-instances
+        run: |
+          echo "🔨 Creating 2 extra EC2 instances for ALB testing..."
+
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=isDefault,Values=true" \
+            --query "Vpcs[0].VpcId" \
+            --output text --region ${{ env.AWS_REGION }})
+
+          # Get subnets in different AZs
+          SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "Subnets[*].[SubnetId,AvailabilityZone]" \
+            --output text --region ${{ env.AWS_REGION }})
+
+          SUBNET_2=$(echo "$SUBNETS" | sed -n '2p' | awk '{print $1}')
+          AZ_2=$(echo "$SUBNETS" | sed -n '2p' | awk '{print $2}')
+          SUBNET_3=$(echo "$SUBNETS" | sed -n '3p' | awk '{print $1}')
+          AZ_3=$(echo "$SUBNETS" | sed -n '3p' | awk '{print $2}')
+
+          AMI_ID=$(aws ec2 describe-images \
+            --owners amazon \
+            --filters \
+              "Name=name,Values=al2023-ami-2023.*-x86_64" \
+              "Name=state,Values=available" \
+            --query "Images | sort_by(@, &CreationDate) | [-1].ImageId" \
+            --output text --region ${{ env.AWS_REGION }})
+
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters \
+              "Name=group-name,Values=student-service-sg" \
+              "Name=vpc-id,Values=$VPC_ID" \
+            --query "SecurityGroups[0].GroupId" \
+            --output text --region ${{ env.AWS_REGION }})
+
+          # Instance 2
+          INSTANCE_2=$(aws ec2 run-instances \
+            --image-id $AMI_ID \
+            --instance-type t2.micro \
+            --subnet-id $SUBNET_2 \
+            --security-group-ids $SG_ID \
+            --iam-instance-profile Name=ec2-s3-role \
+            --associate-public-ip-address \
+            --user-data '#!/bin/bash
+          yum update -y
+          yum install -y docker
+          systemctl enable docker && systemctl start docker' \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=student-service-ec2-2}]" \
+            --query "Instances[0].InstanceId" \
+            --output text --region ${{ env.AWS_REGION }})
+          echo "   Instance 2: $INSTANCE_2 in $AZ_2"
+
+          # Instance 3
+          INSTANCE_3=$(aws ec2 run-instances \
+            --image-id $AMI_ID \
+            --instance-type t2.micro \
+            --subnet-id $SUBNET_3 \
+            --security-group-ids $SG_ID \
+            --iam-instance-profile Name=ec2-s3-role \
+            --associate-public-ip-address \
+            --user-data '#!/bin/bash
+          yum update -y
+          yum install -y docker
+          systemctl enable docker && systemctl start docker' \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=student-service-ec2-3}]" \
+            --query "Instances[0].InstanceId" \
+            --output text --region ${{ env.AWS_REGION }})
+          echo "   Instance 3: $INSTANCE_3 in $AZ_3"
+
+          # Wait for both
+          aws ec2 wait instance-running --instance-ids $INSTANCE_2 $INSTANCE_3 --region ${{ env.AWS_REGION }}
+          aws ec2 wait instance-status-ok --instance-ids $INSTANCE_2 $INSTANCE_3 --region ${{ env.AWS_REGION }}
+
+          echo "instance_id_2=$INSTANCE_2" >> $GITHUB_OUTPUT
+          echo "instance_id_3=$INSTANCE_3" >> $GITHUB_OUTPUT
+          echo "✅ ALB test instances ready: $INSTANCE_2, $INSTANCE_3"
+
+      - name: Deploy app to ALB test instances (DELETE LATER)
+        run: |
+          for INSTANCE_ID in "${{ steps.alb-instances.outputs.instance_id_2 }}" "${{ steps.alb-instances.outputs.instance_id_3 }}"; do
+            echo "🚀 Deploying to $INSTANCE_ID..."
+            COMMAND_ID=$(aws ssm send-command \
+              --instance-ids "$INSTANCE_ID" \
+              --document-name "AWS-RunShellScript" \
+              --parameters "commands=[
+                'yum install -y docker 2>/dev/null || true',
+                'systemctl start docker || true',
+                'aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}',
+                'docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}',
+                'docker stop student-service 2>/dev/null || true',
+                'docker rm student-service 2>/dev/null || true',
+                'docker run -d --name student-service --restart unless-stopped -p ${{ env.APP_PORT }}:${{ env.APP_PORT }} -e SPRING_PROFILES_ACTIVE=dev ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}'
+              ]" \
+              --region ${{ env.AWS_REGION }} \
+              --query "Command.CommandId" \
+              --output text)
+
+            echo "   Waiting for deploy..."
+            sleep 30
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id $COMMAND_ID \
+              --instance-id $INSTANCE_ID \
+              --region ${{ env.AWS_REGION }} \
+              --query "Status" --output text 2>/dev/null || echo "InProgress")
+            echo "   $INSTANCE_ID → $STATUS"
+          done
+          echo "✅ All 3 instances running the app"
+      # ══════════════════════════════════════════════════════════════════════════
+      # ⚠️ END DELETE BLOCK — Remove everything between ══ lines after testing
+      # ══════════════════════════════════════════════════════════════════════════
+
       # ─── 6. Deploy via SSM (no SSH / no port 22 needed) ────────────────────
       - name: Deploy to EC2 via SSM
         run: |
