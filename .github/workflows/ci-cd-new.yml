@@ -3,7 +3,6 @@ name: "Deploy to EC2"
 on:
   push:
     branches:
-      - main
       - master
   workflow_dispatch:
 
@@ -56,8 +55,8 @@ jobs:
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
           echo "✅ Pushed: ${IMAGE_TAG}"
 
-      # ─── 5. Find or Create EC2 ──────────────────────────────────────────────
-      - name: Get or Create EC2 instance
+      # ─── 5. Find existing EC2 ───────────────────────────────────────────────
+      - name: Get EC2 instance info
         id: ec2
         run: |
           INSTANCE_ID=$(aws ec2 describe-instances \
@@ -68,63 +67,12 @@ jobs:
             --output text --region ${{ env.AWS_REGION }})
 
           if [ "$INSTANCE_ID" == "None" ] || [ -z "$INSTANCE_ID" ]; then
-            echo "⚠️ No EC2 found — creating new instance..."
-
-            AMI_ID=$(aws ec2 describe-images \
-              --owners amazon \
-              --filters "Name=name,Values=al2023-ami-*-x86_64" "Name=state,Values=available" \
-              --query "sort_by(Images, &CreationDate)[-1].ImageId" \
-              --output text)
-            echo "Using AMI: $AMI_ID"
-
-            VPC_ID=$(aws ec2 describe-vpcs \
-              --filters "Name=is-default,Values=true" \
-              --query "Vpcs[0].VpcId" --output text)
-            echo "Using VPC: $VPC_ID"
-
-            SG_ID=$(aws ec2 describe-security-groups \
-              --filters "Name=group-name,Values=student-service-sg" "Name=vpc-id,Values=$VPC_ID" \
-              --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || true)
-
-            if [ "$SG_ID" == "None" ] || [ -z "$SG_ID" ]; then
-              SG_ID=$(aws ec2 create-security-group \
-                --group-name student-service-sg \
-                --description "Student Service SG" \
-                --vpc-id $VPC_ID \
-                --query "GroupId" --output text)
-              aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port ${{ env.APP_PORT }} --cidr 0.0.0.0/0
-              aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0
-              echo "✅ Created security group: $SG_ID"
-            else
-              echo "✅ Using existing security group: $SG_ID"
-            fi
-
-            INSTANCE_ID=$(aws ec2 run-instances \
-              --image-id $AMI_ID \
-              --count 1 \
-              --instance-type t2.micro \
-              --security-group-ids $SG_ID \
-              --iam-instance-profile Name=ec2-s3-role \
-              --user-data '#!/bin/bash
-yum update -y
-yum install -y docker
-systemctl start docker
-systemctl enable docker
-usermod -a -G docker ec2-user
-yum install -y amazon-ssm-agent
-systemctl enable amazon-ssm-agent
-systemctl start amazon-ssm-agent' \
-              --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${{ env.EC2_TAG_NAME }}}]" \
-              --query "Instances[0].InstanceId" \
-              --output text)
-
-            echo "✅ Created: $INSTANCE_ID"
-            echo "⏳ Waiting for instance to be running..."
-            aws ec2 wait instance-running --instance-ids $INSTANCE_ID
-            echo "⏳ Waiting 60s for SSM agent to start..."
-            sleep 60
+            echo "❌ No EC2 found with tag Name=${{ env.EC2_TAG_NAME }}"
+            echo "   Make sure your EC2 instance has a tag: Name = student-service-ec2"
+            exit 1
           fi
 
+          # Start if stopped
           STATE=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_ID \
             --query "Reservations[0].Instances[0].State.Name" \
@@ -133,7 +81,7 @@ systemctl start amazon-ssm-agent' \
             echo "⚠️ Instance stopped — starting..."
             aws ec2 start-instances --instance-ids $INSTANCE_ID
             aws ec2 wait instance-running --instance-ids $INSTANCE_ID
-            sleep 30
+            sleep 20
           fi
 
           PUBLIC_IP=$(aws ec2 describe-instances \
@@ -141,23 +89,30 @@ systemctl start amazon-ssm-agent' \
             --query "Reservations[0].Instances[0].PublicIpAddress" \
             --output text)
 
+          AZ=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_ID \
+            --query "Reservations[0].Instances[0].Placement.AvailabilityZone" \
+            --output text)
+
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
           echo "public_ip=$PUBLIC_IP"      >> $GITHUB_OUTPUT
-          echo "✅ EC2: $INSTANCE_ID | IP: $PUBLIC_IP"
+          echo "az=$AZ"                    >> $GITHUB_OUTPUT
+          echo "✅ EC2: $INSTANCE_ID | IP: $PUBLIC_IP | AZ: $AZ"
 
-      # ─── 6. Deploy via SSM ──────────────────────────────────────────────────
+      # ─── 6. Deploy via SSM (no SSH / no port 22 needed) ────────────────────
       - name: Deploy to EC2 via SSM
         run: |
           INSTANCE_ID="${{ steps.ec2.outputs.instance_id }}"
 
+          # Build the deploy script as a JSON file to avoid shell escaping issues
           cat > /tmp/ssm-command.json << EOF
           {
             "InstanceIds": ["$INSTANCE_ID"],
             "DocumentName": "AWS-RunShellScript",
             "Parameters": {
               "commands": [
-                "yum install -y docker 2>/dev/null || true",
-                "systemctl start docker || true",
+                "yum install -y docker 2>/dev/null || apt-get install -y docker.io 2>/dev/null || true",
+                "systemctl start docker || service docker start || true",
                 "systemctl enable docker || true",
                 "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}",
                 "docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}",
@@ -178,6 +133,7 @@ systemctl start amazon-ssm-agent' \
             --output text)
 
           echo "📋 Command ID: $COMMAND_ID"
+          echo "⏳ Waiting for deployment to complete..."
 
           for i in $(seq 1 30); do
             STATUS=$(aws ssm get-command-invocation \
@@ -207,5 +163,5 @@ systemctl start amazon-ssm-agent' \
             fi
 
             sleep 10
-            [ $i -eq 30 ] && echo "❌ Timed out" && exit 1
+            [ $i -eq 30 ] && echo "❌ Timed out waiting for SSM command" && exit 1
           done
